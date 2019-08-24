@@ -145,6 +145,10 @@ decl_module! {
 			current_user_dats.push(random_dat);
 			<UsersStorage<T>>::insert(&account.clone(), &current_user_dats);
 			<Nonce>::mutate(|m| *m += 1);
+			if(current_user_dats.len() == 1){
+				<Users<T>>::insert(<UsersCount>::get(), &account);
+				<UsersCount>::mutate(|m| *m += 1);
+			}
 			Self::deposit_event(RawEvent::NewPin(account));
 		}
 

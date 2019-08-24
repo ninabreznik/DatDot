@@ -10,31 +10,56 @@
 
 use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result};
 use system::ensure_signed;
+use codec::{Encode, Decode};
+use rstd::vec::Vec;
+use primitives::ed25519;
+
+type Public = ed25519::Public;
+type Signature = ed25519::Signature;
 
 /// The module's configuration trait.
 pub trait Trait: system::Trait {
-	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+	type Event: From<Event> + Into<<Self as system::Trait>::Event>;
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct Node {
+	index: u64,
+	hash: Vec<u8>,
+	size: u64
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct Proof {
+	index: u64,
+	nodes: Vec<Node>,
+	signature: Option<Signature>
 }
 
 decl_event!(
-	pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
+	pub enum Event {
+		SomethingStored(u64, Public),
 	}
 );
 
 // This module's storage items.
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
-		// Each data item gets an id
-		DataId get(next_id): u64;
-		// Each data item has a tree size
+		// Each dat archive gets an id
+		DatId get(next_id): u64;
+		// Each dat archive has a public key
+		DatKey get(public_key): map u64 => Public;
+		// Each dat archive has a tree size
 		TreeSize get(tree_size): map u64 => u64;
-		// each data item has a merkle rot
-		MerkleRoot get(merkle_root): map u64 => T::Hash;
+		// each dat archive has a merkle root
+		MerkleRoot get(merkle_root): map u64 => Signature;
 		// users are put into an "array"
 		UsersCount: u64;
 		Users: map u64 => T::AccountId;
 		// each user has a vec of data items they manage
-		UsersStorage: map T::AccountId => Vec<u64>
+		UsersStorage: map T::AccountId => Vec<u64>;
 
 		// current check condition
 		SelectedUser: T::AccountId;
@@ -47,13 +72,13 @@ decl_storage! {
 decl_module! {
 	/// The module declaration.
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		fn deposit_event<T>() = default;
+		fn deposit_event() = default;
 
 		fn on_initialize(n: T::BlockNumber) {
 			// if no one is currently selected to give proof, select someone
 		}
 
-		fn submit_proof(origin, proof: Vec<u8>) {
+		fn submit_proof(origin, proof: Proof) {
 			// if proof okay
 				// select new user and proof, update time limit
 			// else let the user try again until time limit
@@ -75,7 +100,7 @@ decl_module! {
 		}
 
 		fn on_finalize(n: T::BlockNumber) {
-			if (n == Self::time_limit) {
+			if (n == Self::time_limit()) {
 				// Drop selected user from the list, maybe punish them
 			}
 		}

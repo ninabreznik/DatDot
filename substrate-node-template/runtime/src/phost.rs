@@ -8,18 +8,19 @@
 /// For more guidance on Substrate modules, see the example module
 /// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 
-use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result};
+use support::{decl_module, decl_storage, decl_event, StorageValue, StorageMap, dispatch::Result};
+use core::convert::TryInto;
 use system::ensure_signed;
 use codec::{Encode, Decode};
 use rstd::vec::Vec;
-use primitives::ed25519;
+use primitives::{ed25519, Hasher, Blake2Hasher};
 
 type Public = ed25519::Public;
 type Signature = ed25519::Signature;
 
 /// The module's configuration trait.
 pub trait Trait: system::Trait {
-	type Event: From<Event> + Into<<Self as system::Trait>::Event>;
+	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone)]
@@ -38,9 +39,20 @@ pub struct Proof {
 	signature: Option<Signature>
 }
 
+type DatIdIndex = u64;
+type UserIdIndex = u64;
+
 decl_event!(
-	pub enum Event {
-		SomethingStored(u64, Public),
+	pub enum Event<T> 
+	where
+	AccountId = <T as system::Trait>::AccountId,
+	BlockNumber = <T as system::Trait>::BlockNumber 
+	{
+		SomethingStored(DatIdIndex, Public),
+		Challenge(
+			AccountId,
+			BlockNumber
+		),
 	}
 );
 
@@ -48,7 +60,7 @@ decl_event!(
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
 		// Each dat archive gets an id
-		DatId get(next_id): u64;
+		DatId get(next_id): DatIdIndex;
 		// Each dat archive has a public key
 		DatKey get(public_key): map u64 => Public;
 		// Each dat archive has a tree size
@@ -57,36 +69,60 @@ decl_storage! {
 		MerkleRoot get(merkle_root): map u64 => Signature;
 		// users are put into an "array"
 		UsersCount: u64;
-		Users: map u64 => T::AccountId;
+		Users get(user): map UserIdIndex => T::AccountId;
 		// each user has a vec of data items they manage
-		UsersStorage: map T::AccountId => Vec<u64>;
+		UsersStorage: map T::AccountId => Vec<Public>;
 
 		// current check condition
 		SelectedUser: T::AccountId;
-		SelectedDataId: u64;
+		SelectedDat: Public;
 		TimeLimit get(time_limit): T::BlockNumber;
+		Nonce: u64;
 	}
 }
+
 
 // The module's dispatchable functions.
 decl_module! {
 	/// The module declaration.
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		fn deposit_event() = default;
+		fn deposit_event<T>() = default;
 
 		fn on_initialize(n: T::BlockNumber) {
 			// if no one is currently selected to give proof, select someone
+			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
+				let nonce = <Nonce>::get();
+				let new_random = (<system::Module<T>>::random_seed(), nonce)
+					.using_encoded(|b| Blake2Hasher::hash(b))
+					.using_encoded(|mut b| u64::decode(&mut b))
+					.expect("Hash must be bigger than 8 bytes; Qed");
+				let new_time_limit = new_random % <DatId>::get();
+				let future_block = 
+					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(2));
+				let random_user_index = new_random % <UsersCount>::get();
+				let random_user = <Users<T>>::get(random_user_index);
+				let users_dats = <UsersStorage<T>>::get(random_user.clone());
+				let users_dats_len = users_dats.len();
+				let random_dat = users_dats.get(new_random as usize % users_dats_len)
+					.expect("Users must not have empty storage; Qed");
+				<SelectedUser<T>>::put(&random_user);
+				<SelectedDat>::put(random_dat);
+				<TimeLimit<T>>::put(future_block);
+				<Nonce>::mutate(|m| *m += 1);
+				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
+			}
 		}
 
 		fn submit_proof(origin, proof: Proof) {
 			// if proof okay
-				// select new user and proof, update time limit
+				//reward and unselect user
+				<SelectedUser<T>>::kill();
 			// else let the user try again until time limit
 		}
 
 		// Submit a new piece of data that you want to have users copy
 		fn register_data(origin, merkle_root: T::Hash, tree_size: u64) {
-
+			
 		}
 
 		// owner of data updates blockchain with new merkle root and tree size
@@ -95,13 +131,17 @@ decl_module! {
 		}
 
 		// User claims to be backing up some data
-		fn register_backup(origin, data_id: u64) {
+		fn register_backup(origin) {
 
 		}
 
 		fn on_finalize(n: T::BlockNumber) {
 			if (n == Self::time_limit()) {
-				// Drop selected user from the list, maybe punish them
+				let user = <SelectedUser<T>>::take();
+				//calculate some punishment
+				//punish user
+				<UsersStorage<T>>::remove(user);
+				<UsersCount>::mutate(|m| *m -= 1);
 			}
 		}
 	}

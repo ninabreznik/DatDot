@@ -8,7 +8,8 @@
 /// For more guidance on Substrate modules, see the example module
 /// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 
-use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result};
+use support::{decl_module, decl_storage, decl_event, StorageValue, StorageMap, dispatch::Result};
+use core::convert::TryInto;
 use system::ensure_signed;
 use codec::{Encode, Decode};
 use rstd::vec::Vec;
@@ -88,10 +89,14 @@ decl_module! {
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
+				let new_time_limit = new_random % <DatId>::get();
 				let random_user_index = new_random % <UsersCount>::get();
 				let random_user = Self::user(random_user_index);
 				<SelectedUser<T>>::put(random_user);
-				<Nonce>::mutate(|n| *n += 1);
+				<TimeLimit<T>>::put(
+					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(1)
+				));
+				<Nonce>::mutate(|m| *m += 1);
 			}
 		}
 
@@ -104,7 +109,7 @@ decl_module! {
 
 		// Submit a new piece of data that you want to have users copy
 		fn register_data(origin, merkle_root: T::Hash, tree_size: u64) {
-
+			
 		}
 
 		// owner of data updates blockchain with new merkle root and tree size
@@ -119,7 +124,11 @@ decl_module! {
 
 		fn on_finalize(n: T::BlockNumber) {
 			if (n == Self::time_limit()) {
-				// Drop selected user from the list, maybe punish them
+				let user = <SelectedUser<T>>::take();
+				//calculate some punishment
+				//punish user
+				<UsersStorage<T>>::remove(user);
+				<UsersCount>::mutate(|m| *m -= 1);
 			}
 		}
 	}

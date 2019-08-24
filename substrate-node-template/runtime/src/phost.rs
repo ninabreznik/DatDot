@@ -12,7 +12,7 @@ use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Res
 use system::ensure_signed;
 use codec::{Encode, Decode};
 use rstd::vec::Vec;
-use primitives::ed25519;
+use primitives::{ed25519, Hasher, Blake2Hasher};
 
 type Public = ed25519::Public;
 type Signature = ed25519::Signature;
@@ -84,10 +84,10 @@ decl_module! {
 			// if no one is currently selected to give proof, select someone
 			if !<SelectedUser<T>>::exists() {
 				let nonce = <Nonce>::get();
-				let new_random = <system::Module<T>>::random_seed()
+				let new_random = (<system::Module<T>>::random_seed(), nonce)
+					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
-
 				let random_user_index = new_random % <UsersCount>::get();
 				let random_user = Self::user(random_user_index);
 				<SelectedUser<T>>::put(random_user);

@@ -38,9 +38,13 @@ pub struct Proof {
 	signature: Option<Signature>
 }
 
+type DatIdIndex = u64;
+type UserIdIndex = u64;
+
 decl_event!(
 	pub enum Event {
-		SomethingStored(u64, Public),
+		SomethingStored(DatIdIndex, Public),
+		Challenge(DatIdIndex, UserIdIndex),
 	}
 );
 
@@ -48,7 +52,7 @@ decl_event!(
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
 		// Each dat archive gets an id
-		DatId get(next_id): u64;
+		DatId get(next_id): DatIdIndex;
 		// Each dat archive has a public key
 		DatKey get(public_key): map u64 => Public;
 		// Each dat archive has a tree size
@@ -57,7 +61,7 @@ decl_storage! {
 		MerkleRoot get(merkle_root): map u64 => Signature;
 		// users are put into an "array"
 		UsersCount: u64;
-		Users: map u64 => T::AccountId;
+		Users get(user): map UserIdIndex => T::AccountId;
 		// each user has a vec of data items they manage
 		UsersStorage: map T::AccountId => Vec<u64>;
 
@@ -65,8 +69,10 @@ decl_storage! {
 		SelectedUser: T::AccountId;
 		SelectedDataId: u64;
 		TimeLimit get(time_limit): T::BlockNumber;
+		Nonce: u64;
 	}
 }
+
 
 // The module's dispatchable functions.
 decl_module! {
@@ -76,11 +82,23 @@ decl_module! {
 
 		fn on_initialize(n: T::BlockNumber) {
 			// if no one is currently selected to give proof, select someone
+			if !<SelectedUser<T>>::exists() {
+				let nonce = <Nonce>::get();
+				let new_random = <system::Module<T>>::random_seed()
+					.using_encoded(|mut b| u64::decode(&mut b))
+					.expect("Hash must be bigger than 8 bytes; Qed");
+
+				let random_user_index = new_random % <UsersCount>::get();
+				let random_user = Self::user(random_user_index);
+				<SelectedUser<T>>::put(random_user);
+				<Nonce>::mutate(|n| *n += 1);
+			}
 		}
 
 		fn submit_proof(origin, proof: Proof) {
 			// if proof okay
-				// select new user and proof, update time limit
+				//reward and unselect user
+				<SelectedUser<T>>::kill();
 			// else let the user try again until time limit
 		}
 
@@ -95,7 +113,7 @@ decl_module! {
 		}
 
 		// User claims to be backing up some data
-		fn register_backup(origin, data_id: u64) {
+		fn register_backup(origin, dat_id: u64) {
 
 		}
 

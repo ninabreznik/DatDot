@@ -13,19 +13,33 @@ use system::ensure_signed;
 
 /// The module's configuration trait.
 pub trait Trait: system::Trait {
-	// TODO: Add other types and constants required configure this module.
-
-	/// The overarching event type.
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 }
+
+decl_event!(
+	pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
+	}
+);
 
 // This module's storage items.
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
-		// Just a dummy storage item.
-		// Here we are declaring a StorageValue, `Something` as a Option<u32>
-		// `get(something)` is the default getter which returns either the stored `u32` or `None` if nothing stored
-		Something get(something): Option<u32>;
+		// Each data item gets an id
+		DataId get(next_id): u64;
+		// Each data item has a tree size
+		TreeSize get(tree_size): map u64 => u64;
+		// each data item has a merkle rot
+		MerkleRoot get(merkle_root): map u64 => T::Hash;
+		// users are put into an "array"
+		UsersCount: u64;
+		Users: map u64 => T::AccountId;
+		// each user has a vec of data items they manage
+		UsersStorage: map T::AccountId => Vec<u64>
+
+		// current check condition
+		SelectedUser: T::AccountId;
+		SelectedDataId: u64;
+		TimeLimit get(time_limit): T::BlockNumber;
 	}
 }
 
@@ -33,36 +47,40 @@ decl_storage! {
 decl_module! {
 	/// The module declaration.
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		// Initializing events
-		// this is needed only if you are using events in your module
 		fn deposit_event<T>() = default;
 
-		// Just a dummy entry point.
-		// function that can be called by the external world as an extrinsics call
-		// takes a parameter of the type `AccountId`, stores it and emits an event
-		pub fn do_something(origin, something: u32) -> Result {
-			// TODO: You only need this if you want to check it was signed.
-			let who = ensure_signed(origin)?;
+		fn on_initialize(n: T::BlockNumber) {
+			// if no one is currently selected to give proof, select someone
+		}
 
-			// TODO: Code to execute when something calls this.
-			// For example: the following line stores the passed in u32 in the storage
-			Something::put(something);
+		fn submit_proof(origin, proof: Vec<u8>) {
+			// if proof okay
+				// select new user and proof, update time limit
+			// else let the user try again until time limit
+		}
 
-			// here we are raising the Something event
-			Self::deposit_event(RawEvent::SomethingStored(something, who));
-			Ok(())
+		// Submit a new piece of data that you want to have users copy
+		fn register_data(origin, merkle_root: T::Hash, tree_size: u64) {
+
+		}
+
+		// owner of data updates blockchain with new merkle root and tree size
+		fn update_data(origin, merkle_root: T::Hash, tree_size: u64) {
+
+		}
+
+		// User claims to be backing up some data
+		fn register_backup(origin, data_id: u64) {
+
+		}
+
+		fn on_finalize(n: T::BlockNumber) {
+			if (n == Self::time_limit) {
+				// Drop selected user from the list, maybe punish them
+			}
 		}
 	}
 }
-
-decl_event!(
-	pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
-		// Just a dummy event.
-		// Event `Something` is declared with a parameter of the type `u32` and `AccountId`
-		// To emit this event, we call the deposit funtion, from our runtime funtions
-		SomethingStored(u32, AccountId),
-	}
-);
 
 /// tests for this module
 #[cfg(test)]

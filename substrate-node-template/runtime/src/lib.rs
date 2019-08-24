@@ -269,7 +269,7 @@ construct_runtime!(
 		Indices: indices::{default, Config<T>},
 		Balances: balances,
 		Sudo: sudo,
-		Phost: phost::{Module, Call, Storage, Event},
+		Phost: phost::{Module, Call, Storage, Event<T>},
 	}
 );
 

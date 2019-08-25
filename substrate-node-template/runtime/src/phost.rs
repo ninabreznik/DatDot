@@ -53,6 +53,7 @@ decl_event!(
 			AccountId,
 			BlockNumber
 		),
+		NewPin(AccountId),
 	}
 );
 
@@ -130,16 +131,32 @@ decl_module! {
 
 		}
 
-		// User claims to be backing up some data
+		// User requests a dat for them to pin
 		fn register_backup(origin) {
-
+			let account = ensure_signed(origin)?;
+			let nonce = <Nonce>::get();
+			let new_random = (<system::Module<T>>::random_seed(), nonce)
+					.using_encoded(|b| Blake2Hasher::hash(b))
+					.using_encoded(|mut b| u64::decode(&mut b))
+					.expect("Hash must be bigger than 8 bytes; Qed");
+			let random_index = new_random % <DatId>::get();
+			let random_dat = DatKey::get(random_index);
+			let mut current_user_dats = <UsersStorage<T>>::get(&account);
+			current_user_dats.push(random_dat);
+			<UsersStorage<T>>::insert(&account.clone(), &current_user_dats);
+			<Nonce>::mutate(|m| *m += 1);
+			if(current_user_dats.len() == 1){
+				<Users<T>>::insert(<UsersCount>::get(), &account);
+				<UsersCount>::mutate(|m| *m += 1);
+			}
+			Self::deposit_event(RawEvent::NewPin(account));
 		}
 
 		fn on_finalize(n: T::BlockNumber) {
 			if (n == Self::time_limit()) {
 				let user = <SelectedUser<T>>::take();
-				//calculate some punishment
-				//punish user
+				//(todo) calculate some punishment
+				//(todo) punish user
 				<UsersStorage<T>>::remove(user);
 				<UsersCount>::mutate(|m| *m -= 1);
 			}

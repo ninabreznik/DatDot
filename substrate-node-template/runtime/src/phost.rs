@@ -86,8 +86,10 @@ decl_storage! {
 		Users get(user): map UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
 		UsersStorage: map T::AccountId => Vec<Public>;
-		// each user has a vec of dats they want seeded
-		UsersRequests: map T::AccountId => Vec<Public>;
+		// each dat has a vecc of users pinning it
+		DatHosters: map Public => Vec<T::AccountId>;
+		// each user has a mapping and vec of dats they want seeded
+		UserRequestsMap: map Public => T::AccountId;
 
 		// current check condition
 		SelectedUser: T::AccountId;
@@ -109,6 +111,8 @@ decl_module! {
 			match dat_vec.last() {
 				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
+			// TODO: when a pinner is challenged on a removed dat... 
+			// ... remove from their storage and pick another
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
 				let new_random = (<system::Module<T>>::random_seed(), nonce)
@@ -120,7 +124,7 @@ decl_module! {
 					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(2));
 				let random_user_index = new_random % <UsersCount>::get();
 				let random_user = <Users<T>>::get(random_user_index);
-				let users_dats = <UsersStorage<T>>::get(random_user.clone());
+				let users_dats = <UsersStorage<T>>::get(&random_user);
 				let users_dats_len = users_dats.len();
 				let random_dat = users_dats.get(new_random as usize % users_dats_len)
 					.expect("Users must not have empty storage; Qed");
@@ -144,9 +148,11 @@ decl_module! {
 
 		// Submit or update a piece of data that you want to have users copy
 		fn register_data(origin, merkle_root: (Public, H256, Signature), tree_size: DatSize) {
-			let account = ensure_signed(origin);
+			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
 			let mut lowest_free_index : DatIdIndex = 0;
+			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
+			//verify the signature
 			ensure!(
 				ed25519_verify(
 					&merkle_root.2,
@@ -170,27 +176,64 @@ decl_module! {
 					},
 				}
 				//register new unknown dats
+				//TODO: charge users for doing this the first time
 				<DatKey>::insert(&lowest_free_index, &pubkey)
 			}
-			//FIXME: we don't currently verify if we are updating to a newer root from an older.
 			<MerkleRoot>::insert(&pubkey, (merkle_root.1, merkle_root.2));
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
+			<UserRequestsMap<T>>::insert(&pubkey, &account);
 
-			//TODO: charge users for doing this
-			//and then charge them again based on tree size in regular intervals in on_finalize()
+			//TODO: charge users based on tree size in regular intervals in on_finalize()
 			//FUTURE: everything should be scaled and prioritized by some burn_factor, 
 			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey))
 		}
 
 		//user stops requesting others pin their data
 		fn unregister_data(origin, index: DatIdIndex){
-			// remove dat from storage and mark it's index as free
-			// TODO: when a pinner is challenged on a removed dat... 
-			// ... also remove from pinner storage later in on_initialize()
+			let account = ensure_signed(origin)?;
+			let pubkey = <DatKey>::get(index);
+			//only allow owner to unregister
+			ensure!(
+				<UserRequestsMap<T>>::get(&pubkey) == account,
+				"Cannot unregister archive, not owner."
+			);
+			let mut dat_vec = <DatId>::get();
+			match dat_vec.last() {
+				Some(last_index) => {
+					if index == last_index - 1 {
+						dat_vec.pop();
+					}
+					dat_vec.push(index);
+					dat_vec.sort_unstable();
+					dat_vec.dedup();
+					<DatId>::put(dat_vec);
+				},
+				None => (), //should never happen!
+			}
+			<DatHosters<T>>::get(&pubkey)
+				.iter()
+				.for_each(|account| {
+					let mut storage : Vec<Public> =
+						<UsersStorage<T>>::get(account.clone());
+					match storage.binary_search(&pubkey).ok() {
+						Some(index) => {storage.remove(index);},
+						None => (),
+					}
+					<UsersStorage<T>>::insert(account.clone(), &storage);
+				});
+			<DatHosters<T>>::remove(&pubkey);
+			<DatKey>::remove(&index);
+			<UserRequestsMap<T>>::remove(&pubkey);
+			<TreeSize>::remove(&pubkey);
+			<MerkleRoot>::remove(&pubkey);
+			if (<SelectedDat>::get() == pubkey){
+				<SelectedUser<T>>::kill();
+			}
+			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
-		// User requests a dat for them to pin
+		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
 		fn register_backup(origin) {
 			//TODO: bias towards unseeded dats and burn_factor
 			let account = ensure_signed(origin)?;
@@ -198,16 +241,22 @@ decl_module! {
 			match dat_vec.last() {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
-				let new_random = (<system::Module<T>>::random_seed(), nonce)
+				let new_random = (<system::Module<T>>::random_seed(), &nonce, &account)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
 				let random_index = new_random % last_index;
-				let random_dat = DatKey::get(random_index);
 				let dat_pubkey = DatKey::get(random_index);
 				let mut current_user_dats = <UsersStorage<T>>::get(&account);
-				current_user_dats.push(random_dat);
-				<UsersStorage<T>>::insert(&account.clone(), &current_user_dats);
+				let mut dat_hosters = <DatHosters<T>>::get(&dat_pubkey);
+				current_user_dats.push(dat_pubkey.clone());
+				current_user_dats.sort_unstable();
+				current_user_dats.dedup();
+				dat_hosters.push(account.clone());
+				dat_hosters.sort_unstable();
+				dat_hosters.dedup();
+				<DatHosters<T>>::insert(&dat_pubkey, &dat_hosters);
+				<UsersStorage<T>>::insert(&account, &current_user_dats);
 				<Nonce>::mutate(|m| *m += 1);
 				if(current_user_dats.len() == 1){
 					<Users<T>>::insert(<UsersCount>::get(), &account);

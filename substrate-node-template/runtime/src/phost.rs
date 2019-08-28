@@ -8,12 +8,21 @@
 /// For more guidance on Substrate modules, see the example module
 /// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 
-use support::{decl_module, decl_storage, decl_event, StorageValue, StorageMap, dispatch::Result};
+use support::{
+	decl_module,
+	decl_storage, 
+	decl_event, 
+	ensure,
+	StorageValue, 
+	StorageMap, 
+	dispatch::Result
+};
 use core::convert::TryInto;
 use system::ensure_signed;
 use codec::{Encode, Decode};
 use rstd::vec::Vec;
-use primitives::{ed25519, Hasher, Blake2Hasher};
+use primitives::{ed25519, Hasher, Blake2Hasher, H256};
+use runtime_io::ed25519_verify;
 
 type Public = ed25519::Public;
 type Signature = ed25519::Signature;
@@ -27,7 +36,7 @@ pub trait Trait: system::Trait {
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct Node {
 	index: u64,
-	hash: Vec<u8>,
+	hash: H256,
 	size: u64
 }
 
@@ -40,7 +49,10 @@ pub struct Proof {
 }
 
 type DatIdIndex = u64;
+type DatIdVec = Vec<DatIdIndex>;
 type UserIdIndex = u64;
+// FIXME this is a naive way to approximate size/cost  
+type DatSize = u64;
 
 decl_event!(
 	pub enum Event<T> 
@@ -49,30 +61,33 @@ decl_event!(
 	BlockNumber = <T as system::Trait>::BlockNumber 
 	{
 		SomethingStored(DatIdIndex, Public),
+		SomethingUnstored(DatIdIndex, Public),
 		Challenge(
 			AccountId,
 			BlockNumber
 		),
-		NewPin(AccountId),
+		NewPin(AccountId, Public),
 	}
 );
 
 // This module's storage items.
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
-		// Each dat archive gets an id
-		DatId get(next_id): DatIdIndex;
+		// A vec of free indeces, with the last item usable for `len`
+		DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
-		DatKey get(public_key): map u64 => Public;
+		DatKey get(public_key): map DatIdIndex => Public;
 		// Each dat archive has a tree size
-		TreeSize get(tree_size): map u64 => u64;
+		TreeSize get(tree_size): map Public => DatSize;
 		// each dat archive has a merkle root
-		MerkleRoot get(merkle_root): map u64 => Signature;
+		MerkleRoot get(merkle_root): map Public => (H256, Signature);
 		// users are put into an "array"
 		UsersCount: u64;
 		Users get(user): map UserIdIndex => T::AccountId;
-		// each user has a vec of data items they manage
+		// each user has a vec of dats they seed
 		UsersStorage: map T::AccountId => Vec<Public>;
+		// each user has a vec of dats they want seeded
+		UsersRequests: map T::AccountId => Vec<Public>;
 
 		// current check condition
 		SelectedUser: T::AccountId;
@@ -90,6 +105,9 @@ decl_module! {
 		fn deposit_event<T>() = default;
 
 		fn on_initialize(n: T::BlockNumber) {
+			let dat_vec = <DatId>::get();
+			match dat_vec.last() {
+				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
@@ -97,7 +115,7 @@ decl_module! {
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
-				let new_time_limit = new_random % <DatId>::get();
+				let new_time_limit = new_random % last_index;
 				let future_block = 
 					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(2));
 				let random_user_index = new_random % <UsersCount>::get();
@@ -111,45 +129,94 @@ decl_module! {
 				<TimeLimit<T>>::put(future_block);
 				<Nonce>::mutate(|m| *m += 1);
 				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
+			}},
+			None => (),
 			}
 		}
 
 		fn submit_proof(origin, proof: Proof) {
-			// if proof okay
-				//reward and unselect user
+			// if proof okay (TODO: EPIC: HARD: DIFFICULT)
+				//charge archive pinner (FUTURE: scale by some burn_factor)
+				//reward and unselect prover
 				<SelectedUser<T>>::kill();
 			// else let the user try again until time limit
 		}
 
-		// Submit a new piece of data that you want to have users copy
-		fn register_data(origin, merkle_root: T::Hash, tree_size: u64) {
-			
+		// Submit or update a piece of data that you want to have users copy
+		fn register_data(origin, merkle_root: (Public, H256, Signature), tree_size: DatSize) {
+			let account = ensure_signed(origin);
+			let pubkey = merkle_root.0;
+			let mut lowest_free_index : DatIdIndex = 0;
+			ensure!(
+				ed25519_verify(
+					&merkle_root.2,
+					&merkle_root.1.as_bytes(),
+					&pubkey
+					),
+				"Signature Verification Failed"
+			);
+			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
+			if !<MerkleRoot>::exists(&pubkey){
+				match dat_vec.first() {
+					Some(index) => {
+						lowest_free_index = dat_vec.remove(0);
+						if dat_vec.is_empty() {
+							dat_vec.push(lowest_free_index + 1);
+						}
+					},
+					None => {
+						//add an element if the vec is empty
+						dat_vec.push(1);
+					},
+				}
+				//register new unknown dats
+				<DatKey>::insert(&lowest_free_index, &pubkey)
+			}
+			//FIXME: we don't currently verify if we are updating to a newer root from an older.
+			<MerkleRoot>::insert(&pubkey, (merkle_root.1, merkle_root.2));
+			<DatId>::put(dat_vec);
+			<TreeSize>::insert(&pubkey, tree_size);
+
+			//TODO: charge users for doing this
+			//and then charge them again based on tree size in regular intervals in on_finalize()
+			//FUTURE: everything should be scaled and prioritized by some burn_factor, 
+			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey))
 		}
 
-		// owner of data updates blockchain with new merkle root and tree size
-		fn update_data(origin, merkle_root: T::Hash, tree_size: u64) {
-
+		//user stops requesting others pin their data
+		fn unregister_data(origin, index: DatIdIndex){
+			// remove dat from storage and mark it's index as free
+			// TODO: when a pinner is challenged on a removed dat... 
+			// ... also remove from pinner storage later in on_initialize()
 		}
 
 		// User requests a dat for them to pin
 		fn register_backup(origin) {
+			//TODO: bias towards unseeded dats and burn_factor
 			let account = ensure_signed(origin)?;
-			let nonce = <Nonce>::get();
-			let new_random = (<system::Module<T>>::random_seed(), nonce)
+			let dat_vec = <DatId>::get();
+			match dat_vec.last() {
+				Some(last_index) => {
+				let nonce = <Nonce>::get();
+				let new_random = (<system::Module<T>>::random_seed(), nonce)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
-			let random_index = new_random % <DatId>::get();
-			let random_dat = DatKey::get(random_index);
-			let mut current_user_dats = <UsersStorage<T>>::get(&account);
-			current_user_dats.push(random_dat);
-			<UsersStorage<T>>::insert(&account.clone(), &current_user_dats);
-			<Nonce>::mutate(|m| *m += 1);
-			if(current_user_dats.len() == 1){
-				<Users<T>>::insert(<UsersCount>::get(), &account);
-				<UsersCount>::mutate(|m| *m += 1);
+				let random_index = new_random % last_index;
+				let random_dat = DatKey::get(random_index);
+				let dat_pubkey = DatKey::get(random_index);
+				let mut current_user_dats = <UsersStorage<T>>::get(&account);
+				current_user_dats.push(random_dat);
+				<UsersStorage<T>>::insert(&account.clone(), &current_user_dats);
+				<Nonce>::mutate(|m| *m += 1);
+				if(current_user_dats.len() == 1){
+					<Users<T>>::insert(<UsersCount>::get(), &account);
+					<UsersCount>::mutate(|m| *m += 1);
+				}
+				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
+				},
+				None => (),
 			}
-			Self::deposit_event(RawEvent::NewPin(account));
 		}
 
 		fn on_finalize(n: T::BlockNumber) {
@@ -157,6 +224,7 @@ decl_module! {
 				let user = <SelectedUser<T>>::take();
 				//(todo) calculate some punishment
 				//(todo) punish user
+				//currently we only remove user from future challenges
 				<UsersStorage<T>>::remove(user);
 				<UsersCount>::mutate(|m| *m -= 1);
 			}

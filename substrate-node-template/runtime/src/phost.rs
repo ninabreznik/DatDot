@@ -136,7 +136,7 @@ decl_module! {
 			}
 		}
 
-		fn submit_proof(origin, proof: Proof) {
+		fn submit_proof(origin, proof: Proof, unsigned_root_hash: H256) {
 			let account = ensure_signed(origin)?;
 			ensure!(
 				account == <SelectedUser<T>>::get(),
@@ -144,14 +144,25 @@ decl_module! {
 			);
 			let index_proved = proof.index;
 			let challenge = <SelectedDat>::get();
+			let signature = proof.signature.expect(
+				"Proof should be signed"
+			);
+			ensure!(
+				ed25519_verify(
+					&signature,
+					&unsigned_root_hash.as_bytes(),
+					&challenge.0
+				),
+				"Proof is for the wrong public key"
+			);
 			ensure!(
 				index_proved == challenge.1,
 				"Proof is for the wrong chunk"
 			);
-
 			// if proof okay (TODO: EPIC: HARD: DIFFICULT)
 				//charge archive pinner (FUTURE: scale by some burn_factor)
 				//reward and unselect prover
+				//reward must be greater than charge!
 			<SelectedUser<T>>::kill();
 			// else let the user try again until time limit
 		}

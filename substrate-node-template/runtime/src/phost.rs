@@ -136,7 +136,7 @@ decl_module! {
 			}
 		}
 
-		fn submit_proof(origin, proof: Proof, unsigned_root_hash: H256) {
+		fn submit_proof(origin, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			ensure!(
 				account == <SelectedUser<T>>::get(),
@@ -153,13 +153,39 @@ decl_module! {
 					&unsigned_root_hash.as_bytes(),
 					&challenge.0
 				),
-				"Proof is for the wrong public key"
+				"Signature verification failed"
 			);
 			ensure!(
 				index_proved == challenge.1,
 				"Proof is for the wrong chunk"
 			);
-			// if proof okay (TODO: EPIC: HARD: DIFFICULT)
+			let chunk_len : [u8; 8] = (chunk_content.len() as u64).to_be_bytes();
+			let chunk_hash_label : [u8; 1] = [u8::min_value()];
+			let chunk_hash =
+				(
+					&chunk_hash_label,
+					&chunk_len,
+					chunk_content.as_slice()
+				).using_encoded(|b| Blake2Hasher::hash(b));
+			//this might be redundant if the chunk hash is always last?
+			let proof_nodes : Vec<Node> = proof.nodes.clone();
+			let node_indeces : Vec<u64> = proof_nodes.clone().into_iter().map(|m| {
+					m.index
+				}).collect();
+			let leaf_node_index : usize = node_indeces.binary_search(&index_proved).expect(
+				"Leaf node should exist"
+			);
+			let leaf_node : &Node = proof_nodes.get(leaf_node_index).expect(
+				"Leaf node should exist"
+			);
+			let provided_chunk_hash = leaf_node.hash;
+			ensure!(
+				chunk_hash == provided_chunk_hash,
+				"Could not verify chunk hash"
+			);
+
+			//calculate the root hash
+			//compare to provided root hash
 				//charge archive pinner (FUTURE: scale by some burn_factor)
 				//reward and unselect prover
 				//reward must be greater than charge!

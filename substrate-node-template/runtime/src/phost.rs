@@ -108,7 +108,7 @@ decl_module! {
 			let dat_vec = <DatId>::get();
 			match dat_vec.last() {
 				Some(last_index) => {
-			// if no one is currently selected to give proof, select someonep-
+			// if no one is currently selected to give proof, select someone
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
 				let new_random = (<system::Module<T>>::random_seed(), nonce)

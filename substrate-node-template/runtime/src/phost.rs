@@ -62,10 +62,7 @@ decl_event!(
 	{
 		SomethingStored(DatIdIndex, Public),
 		SomethingUnstored(DatIdIndex, Public),
-		Challenge(
-			AccountId,
-			BlockNumber
-		),
+		Challenge(AccountId,BlockNumber),
 		NewPin(AccountId, Public),
 	}
 );
@@ -93,7 +90,8 @@ decl_storage! {
 
 		// current check condition
 		SelectedUser: T::AccountId;
-		SelectedDat: Public;
+		// Dat and which index to verify
+		SelectedDat: (Public, u64);
 		TimeLimit get(time_limit): T::BlockNumber;
 		Nonce: u64;
 	}
@@ -110,9 +108,7 @@ decl_module! {
 			let dat_vec = <DatId>::get();
 			match dat_vec.last() {
 				Some(last_index) => {
-			// if no one is currently selected to give proof, select someone
-			// TODO: when a pinner is challenged on a removed dat... 
-			// ... remove from their storage and pick another
+			// if no one is currently selected to give proof, select someonep-
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
 				let new_random = (<system::Module<T>>::random_seed(), nonce)
@@ -128,21 +124,35 @@ decl_module! {
 				let users_dats_len = users_dats.len();
 				let random_dat = users_dats.get(new_random as usize % users_dats_len)
 					.expect("Users must not have empty storage; Qed");
+				let dat_tree_len = <TreeSize>::get(random_dat);
+				let random_leave = new_random % dat_tree_len;
+				<SelectedDat>::put((random_dat.clone(), random_leave));
 				<SelectedUser<T>>::put(&random_user);
-				<SelectedDat>::put(random_dat);
 				<TimeLimit<T>>::put(future_block);
 				<Nonce>::mutate(|m| *m += 1);
 				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
 			}},
-			None => (),
+				None => (),
 			}
 		}
 
 		fn submit_proof(origin, proof: Proof) {
+			let account = ensure_signed(origin)?;
+			ensure!(
+				account == <SelectedUser<T>>::get(),
+				"Only the current challengee can respond to their challenge"
+			);
+			let index_proved = proof.index;
+			let challenge = <SelectedDat>::get();
+			ensure!(
+				index_proved == challenge.1,
+				"Proof is for the wrong chunk"
+			);
+
 			// if proof okay (TODO: EPIC: HARD: DIFFICULT)
 				//charge archive pinner (FUTURE: scale by some burn_factor)
 				//reward and unselect prover
-				<SelectedUser<T>>::kill();
+			<SelectedUser<T>>::kill();
 			// else let the user try again until time limit
 		}
 
@@ -152,6 +162,7 @@ decl_module! {
 			let pubkey = merkle_root.0;
 			let mut lowest_free_index : DatIdIndex = 0;
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
+			//FIXME: we don't currently verify tree_size
 			//verify the signature
 			ensure!(
 				ed25519_verify(
@@ -227,7 +238,8 @@ decl_module! {
 			<UserRequestsMap<T>>::remove(&pubkey);
 			<TreeSize>::remove(&pubkey);
 			<MerkleRoot>::remove(&pubkey);
-			if (<SelectedDat>::get() == pubkey){
+			//if the dat being unregistered is currently part of the challenge
+			if (<SelectedDat>::get().0 == pubkey){
 				<SelectedUser<T>>::kill();
 			}
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));

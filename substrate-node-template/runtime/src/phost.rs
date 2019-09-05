@@ -48,10 +48,45 @@ pub struct Proof {
 	signature: Option<Signature>
 }
 
+
+//https://datprotocol.github.io/how-dat-works/#hashes-and-signatures
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct ChunkHashPayload {
+	hash_type: u8, //0
+	chunk_length: u64,
+	chunk_content: Vec<u8>
+}
+
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct ParentHashPayload {
+	hash_type: u8, //1
+	total_length: u64,
+	child_hashes: [H256; 2]
+}
+
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct ParentHashInRoot {
+	hash: H256,
+	hash_number: u64,
+	total_length: u64
+}
+
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct RootHashPayload {
+	hash_type: u8, //2
+	children: Vec<ParentHashInRoot>
+}
+
 type DatIdIndex = u64;
 type DatIdVec = Vec<DatIdIndex>;
-type UserIdIndex = u64;
-// FIXME this is a naive way to approximate size/cost  
+type UserIdIndex = u64; 
 type DatSize = u64;
 
 decl_event!(
@@ -194,21 +229,27 @@ decl_module! {
 		}
 
 		// Submit or update a piece of data that you want to have users copy
-		fn register_data(origin, merkle_root: (Public, H256, Signature), tree_size: DatSize) {
+		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
 			let mut lowest_free_index : DatIdIndex = 0;
+			let root_hash = merkle_root.1
+				.using_encoded(|b| Blake2Hasher::hash(b));
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//FIXME: we don't currently verify tree_size
 			//verify the signature
 			ensure!(
 				ed25519_verify(
 					&merkle_root.2,
-					&merkle_root.1.as_bytes(),
+					&root_hash.as_bytes(),
 					&pubkey
 					),
 				"Signature Verification Failed"
 			);
+			let mut tree_size : u64 = u64::min_value();
+			for child in merkle_root.1.children {
+				tree_size += child.total_length
+			}
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			if !<MerkleRoot>::exists(&pubkey){
 				match dat_vec.first() {
@@ -227,7 +268,7 @@ decl_module! {
 				//TODO: charge users for doing this the first time
 				<DatKey>::insert(&lowest_free_index, &pubkey)
 			}
-			<MerkleRoot>::insert(&pubkey, (merkle_root.1, merkle_root.2));
+			<MerkleRoot>::insert(&pubkey, (root_hash, merkle_root.2));
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
@@ -330,7 +371,8 @@ decl_module! {
 	}
 }
 
-/// tests for this module
+/// TODO: tests for this module
+/// TODO: get some reference test vectors for the proof
 #[cfg(test)]
 mod tests {
 	use super::*;

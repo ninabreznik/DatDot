@@ -110,6 +110,7 @@ decl_storage! {
 		// Each dat archive has a public key
 		DatKey get(public_key): map DatIdIndex => Public;
 		// Each dat archive has a tree size
+		// TODO: remove calls to this when expecting indeces
 		TreeSize get(tree_size): map Public => DatSize;
 		// each dat archive has a merkle root
 		MerkleRoot get(merkle_root): map Public => (H256, Signature);
@@ -194,15 +195,12 @@ decl_module! {
 				index_proved == challenge.1,
 				"Proof is for the wrong chunk"
 			);
-			let chunk_len : [u8; 8] = (chunk_content.len() as u64).to_be_bytes();
-			let chunk_hash_label : [u8; 1] = [u8::min_value()];
-			let chunk_hash =
-				(
-					&chunk_hash_label,
-					&chunk_len,
-					chunk_content.as_slice()
-				).using_encoded(|b| Blake2Hasher::hash(b));
-			//this might be redundant if the chunk hash is always last?
+			let payload = ChunkHashPayload{
+				hash_type : 0,
+				chunk_length : chunk_content.len() as u64,
+				chunk_content : chunk_content
+			};
+			let chunk_hash = payload.using_encoded(|b| Blake2Hasher::hash(b));
 			let proof_nodes : Vec<Node> = proof.nodes.clone();
 			let node_indeces : Vec<u64> = proof_nodes.clone().into_iter().map(|m| {
 					m.index
@@ -218,8 +216,18 @@ decl_module! {
 				chunk_hash == provided_chunk_hash,
 				"Could not verify chunk hash"
 			);
-
-			//calculate the root hash
+			//TODO:
+			// derived from dat docs: 
+			// 	child hashes are always  even-numbered
+			//  parent hashes are always odd-numbered
+			//  to find the parent index of two nodes, 
+			//  calculate the mean of the indeces of the nodes
+			//  in order to calculate the "height" of a node
+			//  count the number of consecutive bits
+			//lookup hashes by indeces, verify parents via children
+			//calculate the root hash from parentless hashes
+			//parentless nodes are nodes that are greater than 
+			//2^"height" index of the highest-index node of the height above
 			//compare to provided root hash
 				//charge archive pinner (FUTURE: scale by some burn_factor)
 				//reward and unselect prover
@@ -236,7 +244,6 @@ decl_module! {
 			let root_hash = merkle_root.1
 				.using_encoded(|b| Blake2Hasher::hash(b));
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
-			//FIXME: we don't currently verify tree_size
 			//verify the signature
 			ensure!(
 				ed25519_verify(

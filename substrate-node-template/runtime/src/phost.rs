@@ -40,6 +40,100 @@ pub struct Node {
 	size: u64
 }
 
+//todo: 'from' the different HashPayload types
+impl Node {
+	fn height(&self) -> u64 {
+		Self::get_height(self.index)
+	}
+
+	fn get_height(index : u64) -> u64 {
+		let mut bit_pointer = 1;
+		let mut cur_height = 0;
+		while (index | bit_pointer) == index {
+			cur_height += 1;
+			bit_pointer *= 2;
+		}
+		cur_height
+	}
+
+	//get the index as if it were a leaf
+	fn relative_index(&self) -> u64 {
+		Self::index_at_height(self.index, self.height())
+	}
+
+	fn index_at_height(index : u64, height : u64) -> u64 {
+		index / 2u64.pow(height.try_into().unwrap())
+	}
+
+	//get the last index at a given height, given a max leaf index
+	fn top_index_at_height(height : u64, max_index : u64) -> Option<u64> {
+		let offset = 2u64.pow(height.try_into().unwrap())-1;
+		let interval = 2u64.pow((height+1).try_into().unwrap());
+		let mut furthest_leaf = 0;
+		let mut result = None;
+		if height == 0 {
+			result = Some(max_index);
+		} else {
+			for i in 0..height { //not inclusive of height intended
+				furthest_leaf += 2u64.pow(i.try_into().unwrap());
+			}
+		}
+		if max_index > offset {
+			let mut next_result = true;
+			while next_result {	
+				match result {
+					Some(index) => {
+						if index + interval + furthest_leaf > max_index {
+							next_result = false;
+						} else {
+							result = Some(index+interval);
+						}
+					},
+					None => {
+						result = Some(offset); 
+					},
+				}
+			}
+		}
+		result
+	}
+
+	//get the highest height, given a max leaf index
+	fn highest_at_index(max_index : u64) -> u64 {
+		//max_index == 2^n - 2
+		//return n
+		let mut current_index = max_index;
+		let mut current_height : u64 = 0;
+		// TODO/FIXME: not currently correct
+		while current_index > 2u64.pow(current_height.try_into().unwrap()) {
+			current_height += 1;
+			current_index -= 2u64.pow(current_height.try_into().unwrap());
+		}
+		current_height
+	}
+
+
+	//get indexes of nodes in a merkle tree that are used to
+	//calculate the root hash
+	fn get_orphan_indeces(highest_index : u64) -> Vec<u64> {
+		let mut indeces : Vec<u64> = Vec::new();
+		for i in 0..Self::highest_at_index(highest_index)+1 {
+			match Self::top_index_at_height(i, highest_index) {
+				Some(expr) => if expr % 2 == 0 {
+					indeces.push(expr);
+				},
+				None => (),
+			}
+		}
+		indeces
+	}
+
+	fn is_orphan(&self, highest_index : u64) -> bool {
+		Self::get_orphan_indeces(highest_index)
+			.contains(&self.index)
+	}
+}
+
 #[derive(Decode, PartialEq, Eq, Encode, Clone)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct Proof {

@@ -102,12 +102,17 @@ impl Node {
 	fn highest_at_index(max_index : u64) -> u64 {
 		//max_index == 2^n - 2
 		//return n
-		let mut current_index = max_index;
+		//needs tests, this was written using trail and error.
+		let mut current_index = Some(max_index);
 		let mut current_height : u64 = 0;
-		// TODO/FIXME: not currently correct
-		while current_index > 2u64.pow(current_height.try_into().unwrap()) {
-			current_height += 1;
-			current_index -= 2u64.pow(current_height.try_into().unwrap());
+		while current_index.unwrap_or(0) > 2u64.pow(current_height.try_into().unwrap()) {
+			current_index = current_index
+				.unwrap_or(0)
+				.checked_sub(2u64.pow((current_height+1).try_into().unwrap()));
+			match current_index {
+				Some(_) => current_height += 1,
+				None => (),
+			}
 		}
 		current_height
 	}
@@ -310,19 +315,34 @@ decl_module! {
 				chunk_hash == provided_chunk_hash,
 				"Could not verify chunk hash"
 			);
+			let root_indeces = Node::get_orphan_indeces(index_proved);
+			let mut root_nodes : Vec<ParentHashInRoot> = Vec::new();
+			proof_nodes.iter().for_each(|check : Node| {
+				let node_index = check.index; 
+				if root_indeces.contains(node_index) {
+					let orphan_hash = ParentHashInRoot {
+						hash: check.hash,
+						hash_number: check.index,
+						total_length: check.size
+					};
+					root_nodes.push(orphan_hash);
+				}
+			});
+			root_nodes.sort_unstable_by(|a , b|
+				a.hash_number.cmp(b.hash_number)
+			);
+			let root_hash_payload = RootHashPayload {
+				hash_type: 2,
+				children: root_nodes
+			}
+			let root_hash = root_hash_payload
+				.using_encoded(|b| Blake2Hasher::hash(b));
+			ensure!(
+				root_hash == unsigned_root_hash,
+				"Root hash verification failed"
+			)
 			//TODO:
-			// derived from dat docs: 
-			// 	child hashes are always  even-numbered
-			//  parent hashes are always odd-numbered
-			//  to find the parent index of two nodes, 
-			//  calculate the mean of the indeces of the nodes
-			//  in order to calculate the "height" of a node
-			//  count the number of consecutive bits
-			//lookup hashes by indeces, verify parents via children
-			//calculate the root hash from parentless hashes
-			//parentless nodes are nodes that are greater than 
-			//2^"height" index of the highest-index node of the height above
-			//compare to provided root hash
+			// verify roots and direct ancestors of the proved chunk_hash
 				//charge archive pinner (FUTURE: scale by some burn_factor)
 				//reward and unselect prover
 				//reward must be greater than charge!

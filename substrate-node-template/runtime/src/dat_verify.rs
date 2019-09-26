@@ -18,14 +18,19 @@ use support::{
 	dispatch::Result
 };
 use core::convert::TryInto;
-use system::ensure_signed;
+use system::{ensure_signed, ensure_root};
 use codec::{Encode, Decode};
 use rstd::vec::Vec;
-use primitives::{ed25519, Hasher, Blake2Hasher, H256};
+use primitives::{
+	ed25519,
+	Hasher,
+	Blake2Hasher, 
+	H256
+};
 use runtime_io::ed25519_verify;
 
-type Public = ed25519::Public;
-type Signature = ed25519::Signature;
+pub type Public = ed25519::Public;
+pub type Signature = ed25519::Signature;
 
 /// The module's configuration trait.
 pub trait Trait: system::Trait {
@@ -201,9 +206,9 @@ decl_event!(
 	}
 );
 
-// This module's storage items.
+// Dat related storage items.
 decl_storage! {
-	trait Store for Module<T: Trait> as TemplateModule {
+	trait Store for Module<T: Trait> as DatVerify {
 		// A vec of free indeces, with the last item usable for `len`
 		DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
@@ -229,11 +234,35 @@ decl_storage! {
 		SelectedDat: (Public, u64);
 		TimeLimit get(time_limit): T::BlockNumber;
 		Nonce: u64;
+		Incentive: map Public => u64;
 	}
 }
 
+//internal functions
+impl<T: Trait> Module<T>{
+	//reward {who} based on the scale of {id}
+    	fn reward(who: &T::AccountId, id: &Public){
+			//TODO
+    	}
+    	//punish {who} based on the scale of {id}
+    	fn punish(who: &T::AccountId, id: &Public){
+			//currently we only remove user from future challenges
+			//TODO slash
+			<UsersStorage<T>>::remove(who);
+			<UsersCount>::mutate(|m| *m -= 1);
+   		}
+    	//charge {who} based on the scale of {id}
+		//charge > reward
+    	fn charge_fee(who: &T::AccountId, id: &Public){
+			//TODO
+    	}
+    	//set the scale of {id}
+    	fn set_incentive(id: &Public, scale: u64){
+			//verify account owns id
+			//TODO
+    	}
+}
 
-// The module's dispatchable functions.
 decl_module! {
 	/// The module declaration.
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
@@ -271,6 +300,8 @@ decl_module! {
 			}
 		}
 
+
+		//test things progressively, doing quicker computations first.
 		fn submit_proof(origin, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			ensure!(
@@ -317,9 +348,9 @@ decl_module! {
 			);
 			let root_indeces = Node::get_orphan_indeces(index_proved);
 			let mut root_nodes : Vec<ParentHashInRoot> = Vec::new();
-			proof_nodes.iter().for_each(|check : Node| {
+			proof_nodes.iter().for_each(|check : &Node| {
 				let node_index = check.index; 
-				if root_indeces.contains(node_index) {
+				if root_indeces.contains(&node_index) {
 					let orphan_hash = ParentHashInRoot {
 						hash: check.hash,
 						hash_number: check.index,
@@ -329,18 +360,18 @@ decl_module! {
 				}
 			});
 			root_nodes.sort_unstable_by(|a , b|
-				a.hash_number.cmp(b.hash_number)
+				a.hash_number.cmp(&b.hash_number)
 			);
 			let root_hash_payload = RootHashPayload {
 				hash_type: 2,
 				children: root_nodes
-			}
+			};
 			let root_hash = root_hash_payload
 				.using_encoded(|b| Blake2Hasher::hash(b));
 			ensure!(
 				root_hash == unsigned_root_hash,
 				"Root hash verification failed"
-			)
+			);
 			//TODO:
 			// verify roots and direct ancestors of the proved chunk_hash
 				//charge archive pinner (FUTURE: scale by some burn_factor)
@@ -386,17 +417,14 @@ decl_module! {
 					},
 				}
 				//register new unknown dats
-				//TODO: charge users for doing this the first time
 				<DatKey>::insert(&lowest_free_index, &pubkey)
 			}
 			<MerkleRoot>::insert(&pubkey, (root_hash, merkle_root.2));
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
-
-			//TODO: charge users based on tree size in regular intervals in on_finalize()
-			//FUTURE: everything should be scaled and prioritized by some burn_factor, 
-			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey))
+			Self::charge_fee(&account, &pubkey);
+			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
 		}
 
 		//user stops requesting others pin their data
@@ -419,7 +447,7 @@ decl_module! {
 					dat_vec.dedup();
 					<DatId>::put(dat_vec);
 				},
-				None => (), //should never happen!
+				None => (),
 			}
 			<DatHosters<T>>::get(&pubkey)
 				.iter()
@@ -446,7 +474,7 @@ decl_module! {
 
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
 		fn register_backup(origin) {
-			//TODO: bias towards unseeded dats and burn_factor
+			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
 			let dat_vec = <DatId>::get();
 			match dat_vec.last() {
@@ -482,15 +510,14 @@ decl_module! {
 		fn on_finalize(n: T::BlockNumber) {
 			if (n == Self::time_limit()) {
 				let user = <SelectedUser<T>>::take();
-				//(todo) calculate some punishment
-				//(todo) punish user
-				//currently we only remove user from future challenges
-				<UsersStorage<T>>::remove(user);
-				<UsersCount>::mutate(|m| *m -= 1);
+				let dat = <SelectedDat>::get().0;
+				Self::punish(&user, &dat);
 			}
+			//TODO: charge users based on tree size for active dats in regular intervals
 		}
 	}
 }
+
 
 /// TODO: tests for this module
 /// TODO: get some reference test vectors for the proof
